@@ -177,7 +177,7 @@ You should see files named like:
 - No attachment export
 - Requires the user to provide a real vault path in helper config
 - If ChatGPT changes its internal API or DOM, selectors or normalization may need updates
-- Canvas code extraction for ChatGPT is working, but the code block may still be appended near the end of the assistant message instead of the exact original position. Content fidelity is acceptable for now and position mapping can be improved later.
+- Canvas code extraction for ChatGPT is working. CLI command blocks (e.g. Bash) are now correctly placed at their original position in the message. Canvas (editor) code blocks may still appear near the end of the assistant message instead of the exact inline position; this is acceptable for now and position mapping can be improved later.
 
 ## Testing
 

@@ -335,7 +335,7 @@
       .filter((block) => !isSpecialCodeContainer(block));
     if (blocks.length === 0) {
       const fallbackText = normalizePlainText(clone.textContent || "");
-      return [fallbackText, ...canvasBlocks, ...readonlyCodeBlocks].filter(Boolean).join("\n\n");
+      return [fallbackText, ...canvasBlocks].filter(Boolean).join("\n\n");
     }
 
     for (const block of blocks) {
@@ -372,7 +372,11 @@
       }
     }
 
-    return [...text, ...canvasBlocks, ...readonlyCodeBlocks].filter(Boolean).join("\n\n");
+    // readonlyCodeBlocks are intentionally excluded here.
+    // augmentConversationWithDomReadonlyArtifacts handles them via
+    // replacePlaceholderFences, which replaces the 'Bash' placeholder
+    // left behind in the text when the header node was not removed.
+    return [...text, ...canvasBlocks].filter(Boolean).join("\n\n");
   }
 
   function augmentConversationWithDomCanvasArtifacts(conversation, domArtifacts = extractCanvasArtifactsFromConversationDom()) {
@@ -533,17 +537,24 @@
   function extractReadonlyCodeBlocksFromNode(node) {
     const codeBlocks = [];
     const readonlyBlocks = findReadonlyCodeNodes(node);
+    console.log(`[SYNC-DEBUG] extractReadonlyCodeBlocksFromNode: found ${readonlyBlocks.length} readonly node(s)`);
 
     for (const readonlyBlock of readonlyBlocks) {
       const headerNode = findReadonlyCodeHeaderNode(readonlyBlock);
-      const language = normalizeLanguage(extractNodeRenderedText(headerNode) || "text");
+      const headerText = extractNodeRenderedText(headerNode);
+      const language = normalizeLanguage(headerText || "text");
       const code = normalizeCodeBlockText(readonlyBlock);
+      console.log(`[SYNC-DEBUG]   readonly block header raw text: ${JSON.stringify(headerText)}`);
+      console.log(`[SYNC-DEBUG]   readonly block language: ${JSON.stringify(language)}`);
+      console.log(`[SYNC-DEBUG]   readonly block code (first 200 chars): ${JSON.stringify((code || "").slice(0, 200))}`);
       if (!code) {
+        console.log(`[SYNC-DEBUG]   => SKIPPED (empty code)`);
         continue;
       }
       codeBlocks.push(`\`\`\`${language}\n${code}\n\`\`\``);
     }
 
+    console.log(`[SYNC-DEBUG] extractReadonlyCodeBlocksFromNode: returning ${codeBlocks.length} code block(s)`);
     return codeBlocks;
   }
 
@@ -796,7 +807,15 @@
 
   function mergeReadonlyBlocksIntoContent(markdown, blocks) {
     const normalizedBlocks = Array.isArray(blocks) ? blocks.filter(Boolean) : [];
+    console.log(`[SYNC-DEBUG] mergeReadonlyBlocksIntoContent called`);
+    console.log(`[SYNC-DEBUG]   markdown length: ${(markdown || "").length}`);
+    console.log(`[SYNC-DEBUG]   markdown content (first 500 chars):\n${(markdown || "").slice(0, 500)}`);
+    console.log(`[SYNC-DEBUG]   blocks count: ${normalizedBlocks.length}`);
+    for (let i = 0; i < normalizedBlocks.length; i++) {
+      console.log(`[SYNC-DEBUG]   block[${i}] (first 200 chars): ${JSON.stringify((normalizedBlocks[i] || "").slice(0, 200))}`);
+    }
     if (!normalizedBlocks.length) {
+      console.log(`[SYNC-DEBUG]   => no blocks, stripping placeholders only`);
       return stripPlaceholderLanguageFences(markdown);
     }
 
@@ -804,12 +823,18 @@
     const replaced = replacement.markdown;
     const blockIndex = replacement.consumedCount;
 
+    console.log(`[SYNC-DEBUG]   replacePlaceholderFences consumed: ${blockIndex} / ${normalizedBlocks.length}`);
+
     const remainingBlocks = normalizedBlocks.slice(blockIndex);
-    return [replaced.trim(), ...remainingBlocks]
+    if (remainingBlocks.length > 0) {
+      console.log(`[SYNC-DEBUG]   ⚠️ ${remainingBlocks.length} block(s) NOT consumed — will be appended at end`);
+    }
+    const result = [replaced.trim(), ...remainingBlocks]
       .filter(Boolean)
       .join("\n\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+    return result;
   }
 
   function applyPreferredFenceLanguage(markdownBlock, preferredLanguage) {
@@ -831,6 +856,8 @@
     let index = 0;
     let consumedCount = 0;
 
+    console.log(`[SYNC-DEBUG] replacePlaceholderFences: total lines = ${lines.length}, blocks = ${blocks.length}`);
+
     while (index < lines.length) {
       if (!isFenceLine(lines[index])) {
         output.push(lines[index]);
@@ -845,13 +872,22 @@
       }
 
       if (fenceEnd >= lines.length) {
+        console.log(`[SYNC-DEBUG]   fence at line ${fenceStart} has no closing fence — treating as content`);
         output.push(...lines.slice(fenceStart));
         break;
       }
 
       const innerLines = lines.slice(fenceStart + 1, fenceEnd);
+      console.log(`[SYNC-DEBUG]   fence pair found: lines ${fenceStart}-${fenceEnd}`);
+      console.log(`[SYNC-DEBUG]     opening fence: ${JSON.stringify(lines[fenceStart])}`);
+      console.log(`[SYNC-DEBUG]     closing fence: ${JSON.stringify(lines[fenceEnd])}`);
+      console.log(`[SYNC-DEBUG]     inner lines (${innerLines.length}): ${JSON.stringify(innerLines)}`);
+
       const placeholderLanguage = detectPlaceholderLanguage(innerLines);
+      console.log(`[SYNC-DEBUG]     detectPlaceholderLanguage result: ${JSON.stringify(placeholderLanguage)}`);
+
       if (!placeholderLanguage) {
+        console.log(`[SYNC-DEBUG]     => NOT a placeholder, keeping original fence`);
         output.push(...lines.slice(fenceStart, fenceEnd + 1));
         index = fenceEnd + 1;
         continue;
@@ -859,13 +895,17 @@
 
       const nextBlock = blocks[consumedCount];
       if (nextBlock) {
+        console.log(`[SYNC-DEBUG]     => ✅ REPLACING placeholder with block[${consumedCount}]`);
         output.push(applyPreferredFenceLanguage(nextBlock, placeholderLanguage));
         consumedCount += 1;
+      } else {
+        console.log(`[SYNC-DEBUG]     => ⚠️ placeholder found but no more blocks to consume`);
       }
 
       index = fenceEnd + 1;
     }
 
+    console.log(`[SYNC-DEBUG] replacePlaceholderFences done: consumed ${consumedCount} block(s)`);
     return {
       markdown: output.join("\n"),
       consumedCount
@@ -881,14 +921,18 @@
       .map((line) => normalizeLanguage(line))
       .filter(Boolean);
 
+    console.log(`[SYNC-DEBUG]     detectPlaceholderLanguage input lines: ${JSON.stringify(lines)}`);
+    console.log(`[SYNC-DEBUG]     detectPlaceholderLanguage normalized: ${JSON.stringify(normalized)}`);
+
     if (normalized.length !== 1) {
+      console.log(`[SYNC-DEBUG]     => rejected: normalized.length=${normalized.length} (expected 1)`);
       return null;
     }
 
     const value = normalized[0];
-    return /^(bash|shell|sh|zsh|terminal|console|powershell|python|javascript|typescript|json|yaml|sql|html|css)$/.test(value)
-      ? value
-      : null;
+    const isKnownLang = /^(bash|shell|sh|zsh|terminal|console|powershell|python|javascript|typescript|json|yaml|sql|html|css)$/.test(value);
+    console.log(`[SYNC-DEBUG]     => value=${JSON.stringify(value)}, isKnownLang=${isKnownLang}`);
+    return isKnownLang ? value : null;
   }
 
   function extractConversationTitle(link) {

@@ -260,43 +260,45 @@ Fixes attempted in order:
 - try replacing placeholder fences with actual readonly blocks
 - later replaced regex strategy with line-based fenced-block parser
 
-Current status:
+Previous status (before final fix):
 - partially fixed
-- user confirmed CLI output now comes through
-- but placement is still wrong:
-  - placeholder `Bash` blocks remain in original positions
-  - actual CLI code blocks get appended at the end in correct order
+- CLI output came through but placement was wrong
+- placeholder `Bash` blocks remained in original positions
+- actual CLI code blocks were appended at the end
 
-This is the main currently unresolved issue.
+Final root cause identified (2026-04-19):
+- `extractMarkdownFromNode()` was appending `readonlyCodeBlocks` directly to the return value alongside `text` and `canvasBlocks`
+- this meant the code blocks were already embedded in `contentMarkdown` before `augmentConversationWithDomReadonlyArtifacts()` ran
+- the dedup check `if (!currentContent.includes(artifactMarkdown))` evaluated to `false` because the blocks were already present
+- therefore `mergeReadonlyBlocksIntoContent()` was never called
+- the placeholder fences (` ```\nBash\n``` `) were never replaced — they stayed in the middle of the text
+- the actual code sat at the end, duplicated from the early append
+
+Final fix applied:
+- removed `readonlyCodeBlocks` from both return paths in `extractMarkdownFromNode()`
+- now only `canvasBlocks` are appended inline
+- `readonlyCodeBlocks` are exclusively handled by `augmentConversationWithDomReadonlyArtifacts()` which calls `mergeReadonlyBlocksIntoContent()` → `replacePlaceholderFences()`
+- `replacePlaceholderFences()` finds each ` ```\nBash\n``` ` placeholder and replaces it with the corresponding actual code block in order
+
+Debug method used:
+- added `[SYNC-DEBUG]` prefixed console.log statements across the extraction and merge pipeline
+- first run confirmed blocks were extracted correctly but `mergeReadonlyBlocksIntoContent` was never called
+- identified the double-append causing the dedup skip
+- after fix, second run confirmed all 4 placeholders matched and replaced: `consumed 4 / 4`
+
+Status:
+- **FIXED** — user confirmed 2026-04-19
+- all 4 CLI code blocks replaced in-place at correct positions
+- language detected as `bash` (from placeholder text), blocks rendered with `bash` fence
 
 ## Current Unresolved Issues
 
-### 1. CLI code block position replacement is still not working
+### 1. CLI code block position replacement — RESOLVED
 
-Observed current behavior:
-- original text contains correctly placed placeholders:
+This was the main outstanding bug. It was fixed on 2026-04-19.
+See Bug #7 above for the full root cause and fix details.
 
-```md
-``` 
-Bash
-```
-```
-
-- actual commands are appended later at end of message
-- order of commands is correct
-- location is wrong
-
-Latest hypothesis:
-- placeholder format in `contentMarkdown` may not match the replacement logic exactly
-- the placeholder may be created through another path before readonly merge runs
-- or content may be normalized differently than expected before replacement
-
-Most likely next debugging step:
-- add debug output inside extraction flow for one current message:
-  - raw `contentMarkdown` before readonly merge
-  - extracted readonly blocks array
-  - merged result after replacement
-- ideally expose this in popup or temporary console logging so no more manual DOM guessing is needed
+The debug logging (`[SYNC-DEBUG]` prefix) is still in `content.js` and can be removed when no longer needed.
 
 ### 2. Canvas code position is still approximate
 
@@ -341,16 +343,15 @@ Recent helper functions added:
 If continuing in a new session, start here:
 
 1. Read this file first
-2. Inspect `extension/content.js`
-3. Focus on the unresolved CLI placeholder replacement issue
-4. Do not revisit native helper setup unless user reports native host problems again
+2. The CLI code block placement bug is now FIXED — no need to revisit
+3. Debug logging (`[SYNC-DEBUG]`) is still present in `content.js` — remove it when no longer needed
+4. Focus on any new extraction issues or feature requests
+5. Do not revisit native helper setup unless user reports native host problems again
 
-Most likely next implementation step:
-- add a temporary debug mode in `popup.js` or `content.js` that logs:
-  - `currentContent` before readonly merge
-  - `artifact.blocks`
-  - result of `mergeReadonlyBlocksIntoContent`
-- compare the exact placeholder fence shape in runtime against what `replacePlaceholderFences()` expects
+Possible next improvements:
+- remove debug logging from `content.js`
+- investigate header detection for readonly code blocks (currently returns empty string, falling back to `text` language — the `Bash` label in the DOM is not being found by `findReadonlyCodeHeaderNode`)
+- improve canvas code exact position mapping (currently acceptable)
 
 ## Commands for Validation
 
@@ -376,20 +377,16 @@ python3 -m py_compile native-helper/chatgpt_obsidian_sync.py native-helper/insta
 - canvas code content now comes through
 - bullet duplication fixed
 - bullet line-break formatting fixed
-- CLI content is at least extractable
+- CLI content is extractable
+- CLI code blocks now replace placeholders in-place at correct positions (verified 2026-04-19, 4/4 blocks consumed)
 
 ### Not yet user-verified for latest code
 
-At the time this memory file was created:
-- latest placeholder replacement logic in `extension/content.js` had been coded and test/syntax-checked
-- user had not yet confirmed whether the newest version fixes CLI block placement
-
-This means:
-- treat the latest `extension/content.js` state as implemented but not fully validated in real ChatGPT UI
+- readonly code block header detection (`findReadonlyCodeHeaderNode`) returns empty — language falls back to `text` instead of `bash`. The `replacePlaceholderFences` flow compensates by using the placeholder label as the language, so the output is correct. But the header detection itself could be improved.
 
 ## Short Handoff Summary
 
-Project is mostly working.
+Project is mostly working. All major extraction bugs are now fixed.
 
 Working:
 - setup
@@ -397,7 +394,9 @@ Working:
 - note writing
 - bullet formatting
 - canvas code extraction
+- CLI command block extraction and in-place replacement ✅ (fixed 2026-04-19)
 
-Still problematic:
-- CLI command blocks show correct content, but are appended at the end instead of replacing the in-place `Bash` placeholders
+Minor remaining items:
 - canvas/code exact position is still approximate but acceptable for now
+- readonly code block header detection returns empty (language fallback compensates)
+- debug logging (`[SYNC-DEBUG]`) is still in `content.js` — safe to remove when stable
