@@ -1,0 +1,11 @@
+{
+  "name": "chatgpt-obsidian-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Chrome extension and macOS native helper to sync ChatGPT conversations into Obsidian.",
+  "scripts": {
+    "test": "npm run test:js && npm run test:py",
+    "test:js": "node --test tests/*.test.js",
+    "test:py": "python3 -m unittest discover -s tests -p 'test_*.py'"
+  }
+}

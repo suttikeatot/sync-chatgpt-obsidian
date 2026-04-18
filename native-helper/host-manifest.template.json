@@ -1,0 +1,9 @@
+{
+  "name": "com.suttikeat.chatgpt_obsidian_sync",
+  "description": "Sync ChatGPT conversations into Obsidian",
+  "path": "/absolute/path/to/chatgpt_obsidian_sync.py",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://YOUR_EXTENSION_ID/"
+  ]
+}

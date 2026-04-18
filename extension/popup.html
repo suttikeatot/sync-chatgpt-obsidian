@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChatGPT to Obsidian Sync</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="hero">
+        <p class="eyebrow">ChatGPT to Obsidian</p>
+        <h1>Sync selected chats into your second brain</h1>
+        <p class="subtle">Open ChatGPT, choose conversations, then push them into your Obsidian vault on macOS.</p>
+      </header>
+
+      <section class="panel">
+        <div class="row">
+          <button id="refreshButton" class="button secondary">Refresh chats</button>
+          <button id="selectCurrentButton" class="button ghost">Current</button>
+          <button id="selectAllButton" class="button ghost">All</button>
+        </div>
+        <div id="statusBanner" class="status-banner hidden"></div>
+        <div id="chatList" class="chat-list"></div>
+      </section>
+
+      <section class="panel">
+        <label class="field">
+          <span>Target folder inside vault</span>
+          <input id="targetFolderInput" type="text" placeholder="chatgpt">
+        </label>
+        <label class="field">
+          <span>Native host name</span>
+          <input id="hostNameInput" type="text" placeholder="com.suttikeat.chatgpt_obsidian_sync">
+        </label>
+        <button id="saveSettingsButton" class="button secondary">Save settings</button>
+      </section>
+
+      <section class="panel action-panel">
+        <button id="syncButton" class="button primary">Sync selected</button>
+        <p class="subtle small">If the native helper is not available, the popup will offer downloadable Markdown files as a fallback.</p>
+      </section>
+
+      <section id="resultPanel" class="panel hidden"></section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
