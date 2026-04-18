@@ -1,14 +1,23 @@
 (function bootstrapContentScript() {
   const CHAT_PATH_PATTERN = /\/c\/([a-zA-Z0-9-]+)/;
+  const PAGE_MESSAGE_SOURCE = "chatgpt-obsidian-sync";
+  const interceptedTextdocs = new Map();
+  const pendingSnapshotRequests = new Map();
+
+  window.addEventListener("message", handlePageMessage);
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "LIST_CONVERSATIONS") {
-      listVisibleConversations().then(sendResponse);
+      listVisibleConversations()
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
     }
 
     if (message?.type === "EXTRACT_CONVERSATIONS") {
-      extractConversations(message.conversationIds || []).then(sendResponse);
+      extractConversations(message.conversationIds || [])
+        .then(sendResponse)
+        .catch((error) => sendResponse({ ok: false, error: error.message }));
       return true;
     }
 
@@ -83,19 +92,27 @@
   }
 
   async function fetchConversation(conversationId, fallbackConversation) {
+    if (getCurrentConversationId() === conversationId) {
+      let normalized = normalizeCurrentConversationFromDom(
+        fallbackConversation,
+        new Error("Using DOM-first extraction for the active conversation.")
+      );
+      const domArtifacts = extractCanvasArtifactsFromConversationDom();
+      const textdocs = await fetchConversationTextdocs(conversationId);
+      normalized = augmentConversationWithTextdocs(normalized, textdocs, domArtifacts);
+      if (!textdocs.length) {
+        normalized = augmentConversationWithDomCanvasArtifacts(normalized, domArtifacts);
+      }
+      return normalized;
+    }
+
     try {
       const payload = await fetchJson(`/backend-api/conversation/${conversationId}`);
       let normalized = normalizeConversationFromApi(payload, fallbackConversation);
       const textdocs = await fetchConversationTextdocs(conversationId);
       normalized = augmentConversationWithTextdocs(normalized, textdocs);
-      if (getCurrentConversationId() === conversationId) {
-        return augmentConversationWithDomCanvasArtifacts(normalized);
-      }
       return normalized;
     } catch (error) {
-      if (getCurrentConversationId() === conversationId) {
-        return normalizeCurrentConversationFromDom(fallbackConversation, error);
-      }
       throw error;
     }
   }
@@ -132,17 +149,10 @@
   }
 
   async function fetchConversationTextdocs(conversationId) {
-    try {
-      const payload = await fetchJson(`/backend-api/conversation/${conversationId}/textdocs`);
-      if (!Array.isArray(payload)) {
-        return [];
-      }
-      return payload
-        .map(normalizeTextdoc)
-        .filter((textdoc) => textdoc.contentMarkdown.trim().length > 0);
-    } catch (_error) {
-      return [];
-    }
+    const snapshot = await requestTextdocsSnapshot(conversationId);
+    return (Array.isArray(snapshot) ? snapshot : getInterceptedTextdocs(conversationId))
+      .map(normalizeTextdoc)
+      .filter((textdoc) => textdoc.contentMarkdown.trim().length > 0);
   }
 
   function normalizeTextdoc(textdoc) {
@@ -168,34 +178,44 @@
     };
   }
 
-  function augmentConversationWithTextdocs(conversation, textdocs) {
+  function augmentConversationWithTextdocs(conversation, textdocs, domArtifacts = []) {
     if (!textdocs.length) {
       return conversation;
     }
 
     const messages = (conversation.messages || []).map((message) => ({ ...message }));
-    const targetIndex = findLastAssistantMessageIndex(messages);
-    const combinedMarkdown = textdocs.map((textdoc) => textdoc.contentMarkdown).join("\n\n");
-    const latestUpdatedAt = textdocs
-      .map((textdoc) => textdoc.updatedAt)
-      .filter(Boolean)
-      .sort()
-      .at(-1) || null;
+    const assistantAnchors = domArtifacts.filter((artifact) => artifact.role === "assistant");
+    const targetIndices = textdocs.map((_, index) => {
+      const anchor = assistantAnchors[index] || assistantAnchors[assistantAnchors.length - 1] || null;
+      if (anchor?.occurrence) {
+        return findNthMessageIndex(messages, "assistant", anchor.occurrence);
+      }
+      return findLastAssistantMessageIndex(messages);
+    });
 
-    if (targetIndex === -1) {
-      messages.push({
-        role: "assistant",
-        contentMarkdown: combinedMarkdown,
-        createdAt: latestUpdatedAt
-      });
-    } else if (!String(messages[targetIndex].contentMarkdown || "").includes(combinedMarkdown)) {
-      messages[targetIndex].contentMarkdown = [
-        String(messages[targetIndex].contentMarkdown || "").trim(),
-        combinedMarkdown
-      ].filter(Boolean).join("\n\n");
+    for (let index = 0; index < textdocs.length; index += 1) {
+      const textdoc = textdocs[index];
+      const targetIndex = targetIndices[index];
+      const currentMarkdown = textdoc.contentMarkdown;
 
-      if (!messages[targetIndex].createdAt && latestUpdatedAt) {
-        messages[targetIndex].createdAt = latestUpdatedAt;
+      if (targetIndex === -1) {
+        messages.push({
+          role: "assistant",
+          contentMarkdown: currentMarkdown,
+          createdAt: textdoc.updatedAt || null
+        });
+        continue;
+      }
+
+      if (!String(messages[targetIndex].contentMarkdown || "").includes(currentMarkdown)) {
+        messages[targetIndex].contentMarkdown = [
+          stripCanvasSections(String(messages[targetIndex].contentMarkdown || "").trim()),
+          currentMarkdown
+        ].filter(Boolean).join("\n\n");
+      }
+
+      if (!messages[targetIndex].createdAt && textdoc.updatedAt) {
+        messages[targetIndex].createdAt = textdoc.updatedAt;
       }
     }
 
@@ -336,8 +356,7 @@
     return [...text, ...canvasBlocks].filter(Boolean).join("\n\n");
   }
 
-  function augmentConversationWithDomCanvasArtifacts(conversation) {
-    const domArtifacts = extractCanvasArtifactsFromConversationDom();
+  function augmentConversationWithDomCanvasArtifacts(conversation, domArtifacts = extractCanvasArtifactsFromConversationDom()) {
     if (!domArtifacts.length) {
       return conversation;
     }
@@ -374,12 +393,30 @@
 
   function extractCanvasArtifactsFromConversationDom() {
     const messageNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
-    return messageNodes
-      .map((node) => ({
-        role: node.getAttribute("data-message-author-role") || "user",
-        blocks: extractCanvasBlocksFromNode(node)
-      }))
+    const roleCounts = new Map();
+    const artifacts = messageNodes
+      .map((node) => {
+        const role = node.getAttribute("data-message-author-role") || "user";
+        const occurrence = (roleCounts.get(role) || 0) + 1;
+        roleCounts.set(role, occurrence);
+        return {
+          role,
+          occurrence,
+          blocks: extractCanvasBlocksFromNode(node)
+        };
+      })
       .filter((artifact) => artifact.blocks.length > 0);
+
+    if (artifacts.length > 0) {
+      return artifacts;
+    }
+
+    const globalCanvasBlocks = extractCanvasBlocksFromNode(document);
+    if (!globalCanvasBlocks.length) {
+      return [];
+    }
+
+    return [{ role: "assistant", occurrence: roleCounts.get("assistant") || 1, blocks: globalCanvasBlocks }];
   }
 
   function extractCanvasBlocksFromNode(node) {
@@ -450,6 +487,75 @@
     }
 
     return response.json();
+  }
+
+  function handlePageMessage(event) {
+    if (event.source !== window) {
+      return;
+    }
+    const data = event.data;
+    if (!data || data.source !== PAGE_MESSAGE_SOURCE || data.sender !== "page-bridge") {
+      return;
+    }
+
+    if (data.type === "TEXTDOCS_RESPONSE") {
+      const conversationId = data.payload?.conversationId;
+      const textdocs = data.payload?.data;
+      if (!conversationId || !Array.isArray(textdocs)) {
+        return;
+      }
+
+      interceptedTextdocs.set(
+        conversationId,
+        textdocs.map(normalizeTextdoc).filter((textdoc) => textdoc.contentMarkdown.trim().length > 0)
+      );
+      return;
+    }
+
+    if (data.type === "TEXTDOCS_SNAPSHOT") {
+      const requestId = data.payload?.requestId;
+      if (!requestId || !pendingSnapshotRequests.has(requestId)) {
+        return;
+      }
+      const resolver = pendingSnapshotRequests.get(requestId);
+      pendingSnapshotRequests.delete(requestId);
+      resolver(data.payload?.data || []);
+    }
+  }
+
+  function getInterceptedTextdocs(conversationId) {
+    return interceptedTextdocs.get(conversationId) || [];
+  }
+
+  function requestTextdocsSnapshot(conversationId) {
+    return new Promise((resolve) => {
+      const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      pendingSnapshotRequests.set(requestId, resolve);
+      window.postMessage(
+        {
+          source: PAGE_MESSAGE_SOURCE,
+          sender: "content-script",
+          type: "REQUEST_TEXTDOCS_SNAPSHOT",
+          payload: { requestId, conversationId }
+        },
+        "*"
+      );
+
+      setTimeout(() => {
+        if (!pendingSnapshotRequests.has(requestId)) {
+          return;
+        }
+        pendingSnapshotRequests.delete(requestId);
+        resolve(getInterceptedTextdocs(conversationId));
+      }, 500);
+    });
+  }
+
+  function stripCanvasSections(markdown) {
+    return String(markdown || "")
+      .replace(/\n{0,2}#### Canvas: .*?```[\s\S]*?```\n*/g, "\n\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
   }
 
   function extractConversationTitle(link) {
