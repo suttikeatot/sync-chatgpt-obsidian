@@ -320,7 +320,8 @@
     }
     const text = [];
 
-    const blocks = clone.querySelectorAll("pre, li, p, h1, h2, h3, h4, h5, h6, blockquote");
+    const blocks = Array.from(clone.querySelectorAll("pre, li, p, h1, h2, h3, h4, h5, h6, blockquote"))
+      .filter((block) => !hasRelevantAncestor(block, clone));
     if (blocks.length === 0) {
       const fallbackText = normalizePlainText(clone.textContent || "");
       return [fallbackText, ...canvasBlocks].filter(Boolean).join("\n\n");
@@ -337,8 +338,9 @@
       }
 
       if (block.matches("blockquote")) {
-        const quoteText = (block.textContent || "")
+        const quoteText = normalizePlainText(block.textContent || "")
           .split("\n")
+          .filter(Boolean)
           .map((line) => `> ${line}`)
           .join("\n");
         text.push(quoteText);
@@ -346,11 +348,17 @@
       }
 
       if (block.matches("li")) {
-        text.push(`- ${block.textContent || ""}`);
+        const itemText = normalizeListItemText(block);
+        if (itemText) {
+          text.push(`- ${itemText}`);
+        }
         continue;
       }
 
-      text.push(block.textContent || "");
+      const blockText = normalizePlainText(block.textContent || "");
+      if (blockText) {
+        text.push(blockText);
+      }
     }
 
     return [...text, ...canvasBlocks].filter(Boolean).join("\n\n");
@@ -468,6 +476,25 @@
 
   function normalizePlainText(value) {
     return String(value || "").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function normalizeListItemText(node) {
+    const clone = node.cloneNode(true);
+    for (const nestedList of clone.querySelectorAll("ul, ol")) {
+      nestedList.remove();
+    }
+    return normalizePlainText((clone.textContent || "").replace(/\n+/g, " "));
+  }
+
+  function hasRelevantAncestor(node, boundary) {
+    let current = node.parentElement;
+    while (current && current !== boundary) {
+      if (current.matches("li, pre, blockquote")) {
+        return true;
+      }
+      current = current.parentElement;
+    }
+    return false;
   }
 
   function normalizeLanguage(value) {
