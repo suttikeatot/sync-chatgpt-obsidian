@@ -84,19 +84,10 @@
 
   async function fetchConversation(conversationId, fallbackConversation) {
     try {
-      const response = await fetch(`/backend-api/conversation/${conversationId}`, {
-        credentials: "include",
-        headers: {
-          "accept": "application/json"
-        }
-      });
-
-      if (!response.ok) {
-        throw new Error(`ChatGPT API returned ${response.status}.`);
-      }
-
-      const payload = await response.json();
-      const normalized = normalizeConversationFromApi(payload, fallbackConversation);
+      const payload = await fetchJson(`/backend-api/conversation/${conversationId}`);
+      let normalized = normalizeConversationFromApi(payload, fallbackConversation);
+      const textdocs = await fetchConversationTextdocs(conversationId);
+      normalized = augmentConversationWithTextdocs(normalized, textdocs);
       if (getCurrentConversationId() === conversationId) {
         return augmentConversationWithDomCanvasArtifacts(normalized);
       }
@@ -137,6 +128,80 @@
       role,
       contentMarkdown: parts.join("\n\n").trim(),
       createdAt: isoFromUnixSeconds(message?.create_time)
+    };
+  }
+
+  async function fetchConversationTextdocs(conversationId) {
+    try {
+      const payload = await fetchJson(`/backend-api/conversation/${conversationId}/textdocs`);
+      if (!Array.isArray(payload)) {
+        return [];
+      }
+      return payload
+        .map(normalizeTextdoc)
+        .filter((textdoc) => textdoc.contentMarkdown.trim().length > 0);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function normalizeTextdoc(textdoc) {
+    const type = String(textdoc?.textdoc_type || "");
+    const [, subtype = ""] = type.split("/");
+    const language = normalizeLanguage(subtype || type || "text");
+    const title = String(textdoc?.title || "Canvas");
+    const content = String(textdoc?.content || "").trim();
+    const markdown = [
+      `#### Canvas: ${title}`,
+      "",
+      `\`\`\`${language}`,
+      content,
+      "```"
+    ].join("\n");
+
+    return {
+      id: textdoc?.id || null,
+      title,
+      language,
+      contentMarkdown: markdown,
+      updatedAt: textdoc?.updated_at || null
+    };
+  }
+
+  function augmentConversationWithTextdocs(conversation, textdocs) {
+    if (!textdocs.length) {
+      return conversation;
+    }
+
+    const messages = (conversation.messages || []).map((message) => ({ ...message }));
+    const targetIndex = findLastAssistantMessageIndex(messages);
+    const combinedMarkdown = textdocs.map((textdoc) => textdoc.contentMarkdown).join("\n\n");
+    const latestUpdatedAt = textdocs
+      .map((textdoc) => textdoc.updatedAt)
+      .filter(Boolean)
+      .sort()
+      .at(-1) || null;
+
+    if (targetIndex === -1) {
+      messages.push({
+        role: "assistant",
+        contentMarkdown: combinedMarkdown,
+        createdAt: latestUpdatedAt
+      });
+    } else if (!String(messages[targetIndex].contentMarkdown || "").includes(combinedMarkdown)) {
+      messages[targetIndex].contentMarkdown = [
+        String(messages[targetIndex].contentMarkdown || "").trim(),
+        combinedMarkdown
+      ].filter(Boolean).join("\n\n");
+
+      if (!messages[targetIndex].createdAt && latestUpdatedAt) {
+        messages[targetIndex].createdAt = latestUpdatedAt;
+      }
+    }
+
+    return {
+      ...conversation,
+      messages
     };
   }
 
@@ -355,12 +420,36 @@
     return -1;
   }
 
+  function findLastAssistantMessageIndex(messages) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if ((messages[index].role || "user") === "assistant") {
+        return index;
+      }
+    }
+    return -1;
+  }
+
   function normalizePlainText(value) {
     return String(value || "").replace(/\n{3,}/g, "\n\n").trim();
   }
 
   function normalizeLanguage(value) {
     return String(value || "").replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, "").toLowerCase();
+  }
+
+  async function fetchJson(pathname) {
+    const response = await fetch(pathname, {
+      credentials: "include",
+      headers: {
+        "accept": "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`ChatGPT API returned ${response.status}.`);
+    }
+
+    return response.json();
   }
 
   function extractConversationTitle(link) {
