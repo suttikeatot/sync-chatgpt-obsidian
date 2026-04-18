@@ -98,8 +98,10 @@
         new Error("Using DOM-first extraction for the active conversation.")
       );
       const domArtifacts = extractCanvasArtifactsFromConversationDom();
+      const readonlyArtifacts = extractReadonlyCodeArtifactsFromConversationDom();
       const textdocs = await fetchConversationTextdocs(conversationId);
       normalized = augmentConversationWithTextdocs(normalized, textdocs, domArtifacts);
+      normalized = augmentConversationWithDomReadonlyArtifacts(normalized, readonlyArtifacts);
       if (!textdocs.length) {
         normalized = augmentConversationWithDomCanvasArtifacts(normalized, domArtifacts);
       }
@@ -315,16 +317,25 @@
   function extractMarkdownFromNode(node) {
     const clone = node.cloneNode(true);
     const canvasBlocks = extractCanvasBlocksFromNode(clone);
+    const readonlyCodeBlocks = extractReadonlyCodeBlocksFromNode(clone);
     for (const canvasNode of clone.querySelectorAll(".cm-editor, .cm-content[data-language]")) {
       canvasNode.remove();
+    }
+    for (const readonlyNode of findReadonlyCodeNodes(clone)) {
+      const headerNode = findReadonlyCodeHeaderNode(readonlyNode);
+      if (headerNode) {
+        headerNode.remove();
+      }
+      readonlyNode.remove();
     }
     const text = [];
 
     const blocks = Array.from(clone.querySelectorAll("pre, li, p, h1, h2, h3, h4, h5, h6, blockquote"))
-      .filter((block) => !hasRelevantAncestor(block, clone));
+      .filter((block) => !hasRelevantAncestor(block, clone))
+      .filter((block) => !isSpecialCodeContainer(block));
     if (blocks.length === 0) {
       const fallbackText = normalizePlainText(clone.textContent || "");
-      return [fallbackText, ...canvasBlocks].filter(Boolean).join("\n\n");
+      return [fallbackText, ...canvasBlocks, ...readonlyCodeBlocks].filter(Boolean).join("\n\n");
     }
 
     for (const block of blocks) {
@@ -361,7 +372,7 @@
       }
     }
 
-    return [...text, ...canvasBlocks].filter(Boolean).join("\n\n");
+    return [...text, ...canvasBlocks, ...readonlyCodeBlocks].filter(Boolean).join("\n\n");
   }
 
   function augmentConversationWithDomCanvasArtifacts(conversation, domArtifacts = extractCanvasArtifactsFromConversationDom()) {
@@ -399,6 +410,45 @@
     };
   }
 
+  function augmentConversationWithDomReadonlyArtifacts(
+    conversation,
+    domArtifacts = extractReadonlyCodeArtifactsFromConversationDom()
+  ) {
+    if (!domArtifacts.length) {
+      return conversation;
+    }
+
+    const roleCounts = new Map();
+    const messages = (conversation.messages || []).map((message) => ({ ...message }));
+
+    for (const artifact of domArtifacts) {
+      const nextOccurrence = (roleCounts.get(artifact.role) || 0) + 1;
+      roleCounts.set(artifact.role, nextOccurrence);
+      const messageIndex = findNthMessageIndex(messages, artifact.role, nextOccurrence);
+      if (messageIndex === -1) {
+        continue;
+      }
+
+      const artifactMarkdown = artifact.blocks.join("\n\n").trim();
+      if (!artifactMarkdown) {
+        continue;
+      }
+
+      const currentContent = messages[messageIndex].contentMarkdown || "";
+      if (!currentContent.includes(artifactMarkdown)) {
+        messages[messageIndex].contentMarkdown = mergeReadonlyBlocksIntoContent(
+          currentContent.trim(),
+          artifact.blocks
+        );
+      }
+    }
+
+    return {
+      ...conversation,
+      messages
+    };
+  }
+
   function extractCanvasArtifactsFromConversationDom() {
     const messageNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
     const roleCounts = new Map();
@@ -427,6 +477,34 @@
     return [{ role: "assistant", occurrence: roleCounts.get("assistant") || 1, blocks: globalCanvasBlocks }];
   }
 
+  function extractReadonlyCodeArtifactsFromConversationDom() {
+    const messageNodes = Array.from(document.querySelectorAll("[data-message-author-role]"));
+    const roleCounts = new Map();
+    const artifacts = messageNodes
+      .map((node) => {
+        const role = node.getAttribute("data-message-author-role") || "user";
+        const occurrence = (roleCounts.get(role) || 0) + 1;
+        roleCounts.set(role, occurrence);
+        return {
+          role,
+          occurrence,
+          blocks: extractReadonlyCodeBlocksFromNode(node)
+        };
+      })
+      .filter((artifact) => artifact.blocks.length > 0);
+
+    if (artifacts.length > 0) {
+      return artifacts;
+    }
+
+    const globalReadonlyBlocks = extractReadonlyCodeBlocksFromNode(document);
+    if (!globalReadonlyBlocks.length) {
+      return [];
+    }
+
+    return [{ role: "assistant", occurrence: roleCounts.get("assistant") || 1, blocks: globalReadonlyBlocks }];
+  }
+
   function extractCanvasBlocksFromNode(node) {
     const codeBlocks = [];
     const canvases = node.matches?.(".cm-content[data-language]")
@@ -450,6 +528,130 @@
     }
 
     return codeBlocks;
+  }
+
+  function extractReadonlyCodeBlocksFromNode(node) {
+    const codeBlocks = [];
+    const readonlyBlocks = findReadonlyCodeNodes(node);
+
+    for (const readonlyBlock of readonlyBlocks) {
+      const headerNode = findReadonlyCodeHeaderNode(readonlyBlock);
+      const language = normalizeLanguage(extractNodeRenderedText(headerNode) || "text");
+      const code = normalizeCodeBlockText(readonlyBlock);
+      if (!code) {
+        continue;
+      }
+      codeBlocks.push(`\`\`\`${language}\n${code}\n\`\`\``);
+    }
+
+    return codeBlocks;
+  }
+
+  function findReadonlyCodeNodes(node) {
+    const allNodes = node.matches?.(".cm-content")
+      ? [node, ...Array.from(node.querySelectorAll(".cm-content"))]
+      : Array.from(node.querySelectorAll(".cm-content"));
+
+    return allNodes.filter((candidate, index, list) => {
+      if (!(candidate instanceof Element)) {
+        return false;
+      }
+      if (list.indexOf(candidate) !== index) {
+        return false;
+      }
+
+      const hasReadonlyMarker = /readonly/i.test(candidate.className || "");
+      const hasLanguage = candidate.hasAttribute("data-language");
+      const headerNode = findReadonlyCodeHeaderNode(candidate);
+
+      return !hasLanguage && (hasReadonlyMarker || Boolean(headerNode));
+    });
+  }
+
+  function findReadonlyCodeHeaderNode(node) {
+    const directPrevious = node.previousElementSibling;
+    if (isReadonlyCodeHeaderNode(directPrevious)) {
+      return directPrevious;
+    }
+
+    const parentPrevious = node.parentElement?.previousElementSibling;
+    if (isReadonlyCodeHeaderNode(parentPrevious)) {
+      return parentPrevious;
+    }
+
+    const container = node.parentElement;
+    if (container) {
+      const headerCandidate = container.querySelector(":scope > .flex.w-full.items-center.justify-between");
+      if (isReadonlyCodeHeaderNode(headerCandidate)) {
+        return headerCandidate;
+      }
+    }
+
+    return null;
+  }
+
+  function isReadonlyCodeHeaderNode(node) {
+    if (!node || !(node instanceof Element)) {
+      return false;
+    }
+    const text = normalizePlainText(extractNodeRenderedText(node));
+    if (!text) {
+      return false;
+    }
+    return /^(bash|shell|sh|zsh|terminal|console|powershell|python|javascript|typescript|json|yaml|sql|html|css)$/i.test(text);
+  }
+
+  function normalizeCodeBlockText(node) {
+    const text = extractNodeRenderedText(node);
+    return String(text)
+      .replace(/\u00a0/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function extractNodeRenderedText(node) {
+    if (!node) {
+      return "";
+    }
+
+    const pieces = [];
+    appendRenderedNodeText(node, pieces);
+    return pieces.join("");
+  }
+
+  function appendRenderedNodeText(node, pieces) {
+    if (!node) {
+      return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      pieces.push(node.textContent || "");
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return;
+    }
+
+    if (node.tagName === "BR") {
+      pieces.push("\n");
+      return;
+    }
+
+    for (const child of node.childNodes) {
+      appendRenderedNodeText(child, pieces);
+    }
+  }
+
+  function isSpecialCodeContainer(node) {
+    if (!node || !(node instanceof Element) || !node.matches("pre")) {
+      return false;
+    }
+
+    return Boolean(
+      node.querySelector(".cm-content[data-language]") ||
+      findReadonlyCodeNodes(node).length > 0
+    );
   }
 
   function findNthMessageIndex(messages, role, occurrence) {
@@ -583,6 +785,110 @@
       .replace(/\n{0,2}#### Canvas: .*?```[\s\S]*?```\n*/g, "\n\n")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+  }
+
+  function stripPlaceholderLanguageFences(markdown) {
+    return String(markdown || "")
+      .replace(/\n{0,2}```(?:bash|shell|sh|zsh|terminal|console|powershell|python|javascript|typescript|json|yaml|sql|html|css)\s*```\n*/gi, "\n\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function mergeReadonlyBlocksIntoContent(markdown, blocks) {
+    const normalizedBlocks = Array.isArray(blocks) ? blocks.filter(Boolean) : [];
+    if (!normalizedBlocks.length) {
+      return stripPlaceholderLanguageFences(markdown);
+    }
+
+    const replacement = replacePlaceholderFences(String(markdown || ""), normalizedBlocks);
+    const replaced = replacement.markdown;
+    const blockIndex = replacement.consumedCount;
+
+    const remainingBlocks = normalizedBlocks.slice(blockIndex);
+    return [replaced.trim(), ...remainingBlocks]
+      .filter(Boolean)
+      .join("\n\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function applyPreferredFenceLanguage(markdownBlock, preferredLanguage) {
+    const normalizedPreferred = normalizeLanguage(preferredLanguage || "");
+    if (!normalizedPreferred) {
+      return markdownBlock;
+    }
+
+    if (/^```text\b/i.test(markdownBlock) || /^```\s*\n/.test(markdownBlock)) {
+      return markdownBlock.replace(/^```[^\n]*/, `\`\`\`${normalizedPreferred}`);
+    }
+
+    return markdownBlock;
+  }
+
+  function replacePlaceholderFences(markdown, blocks) {
+    const lines = String(markdown || "").split("\n");
+    const output = [];
+    let index = 0;
+    let consumedCount = 0;
+
+    while (index < lines.length) {
+      if (!isFenceLine(lines[index])) {
+        output.push(lines[index]);
+        index += 1;
+        continue;
+      }
+
+      const fenceStart = index;
+      let fenceEnd = index + 1;
+      while (fenceEnd < lines.length && !isFenceLine(lines[fenceEnd])) {
+        fenceEnd += 1;
+      }
+
+      if (fenceEnd >= lines.length) {
+        output.push(...lines.slice(fenceStart));
+        break;
+      }
+
+      const innerLines = lines.slice(fenceStart + 1, fenceEnd);
+      const placeholderLanguage = detectPlaceholderLanguage(innerLines);
+      if (!placeholderLanguage) {
+        output.push(...lines.slice(fenceStart, fenceEnd + 1));
+        index = fenceEnd + 1;
+        continue;
+      }
+
+      const nextBlock = blocks[consumedCount];
+      if (nextBlock) {
+        output.push(applyPreferredFenceLanguage(nextBlock, placeholderLanguage));
+        consumedCount += 1;
+      }
+
+      index = fenceEnd + 1;
+    }
+
+    return {
+      markdown: output.join("\n"),
+      consumedCount
+    };
+  }
+
+  function isFenceLine(line) {
+    return /^\s*```[a-zA-Z0-9_-]*\s*$/.test(String(line || ""));
+  }
+
+  function detectPlaceholderLanguage(lines) {
+    const normalized = lines
+      .map((line) => normalizeLanguage(line))
+      .filter(Boolean);
+
+    if (normalized.length !== 1) {
+      return null;
+    }
+
+    const value = normalized[0];
+    return /^(bash|shell|sh|zsh|terminal|console|powershell|python|javascript|typescript|json|yaml|sql|html|css)$/.test(value)
+      ? value
+      : null;
   }
 
   function extractConversationTitle(link) {
