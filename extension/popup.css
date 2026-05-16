@@ -110,13 +110,36 @@ body {
   color: var(--muted);
 }
 
-.field input {
+.field input,
+.field select {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px 12px;
   font: inherit;
   background: white;
   color: var(--text);
+  min-width: 0;
+}
+
+.folder-picker {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.folder-picker select {
+  width: 100%;
+}
+
+.folder-picker .button {
+  padding: 10px 12px;
+}
+
+.field-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .chat-list {

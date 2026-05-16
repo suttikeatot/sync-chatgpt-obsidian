@@ -7,20 +7,21 @@ Chrome extension plus a macOS native messaging helper that lets you select ChatG
 - Chrome extension MVP for `chatgpt.com` and `chat.openai.com`
 - Manual multi-select sync from a popup
 - Native messaging helper for macOS that writes Markdown notes into an Obsidian vault
+- Popup folder picker that loads target folders from the configured vault
 - Stable note format with frontmatter and transcript sections
 - Local sync metadata so re-syncs update existing notes and show status
 - Fallback manual export when the native helper is unavailable
 
 ## Repo layout
 
-- [`extension/manifest.json`](/Users/suttikeat/Documents/New%20project/extension/manifest.json)
-- [`extension/popup.html`](/Users/suttikeat/Documents/New%20project/extension/popup.html)
-- [`extension/popup.js`](/Users/suttikeat/Documents/New%20project/extension/popup.js)
-- [`extension/background.js`](/Users/suttikeat/Documents/New%20project/extension/background.js)
-- [`extension/content.js`](/Users/suttikeat/Documents/New%20project/extension/content.js)
-- [`native-helper/chatgpt_obsidian_sync.py`](/Users/suttikeat/Documents/New%20project/native-helper/chatgpt_obsidian_sync.py)
-- [`native-helper/install_host.py`](/Users/suttikeat/Documents/New%20project/native-helper/install_host.py)
-- [`native-helper/config.example.json`](/Users/suttikeat/Documents/New%20project/native-helper/config.example.json)
+- [`extension/manifest.json`](extension/manifest.json)
+- [`extension/popup.html`](extension/popup.html)
+- [`extension/popup.js`](extension/popup.js)
+- [`extension/background.js`](extension/background.js)
+- [`extension/content.js`](extension/content.js)
+- [`native-helper/chatgpt_obsidian_sync.py`](native-helper/chatgpt_obsidian_sync.py)
+- [`native-helper/install_host.py`](native-helper/install_host.py)
+- [`native-helper/config.example.json`](native-helper/config.example.json)
 
 ## Current flow
 
@@ -81,7 +82,7 @@ The shortest installation flow is below.
 
 ### Quick start
 
-1. Load the extension from the [`extension`](/Users/suttikeat/Documents/New project/extension) folder in Chrome.
+1. Load the extension from the [`extension`](extension) folder in Chrome.
 2. Copy the extension ID from `chrome://extensions`.
 3. Run the one-shot setup script:
 
@@ -118,7 +119,7 @@ It checks:
 
 ### 1. Create a config file
 
-Copy [`native-helper/config.example.json`](/Users/suttikeat/Documents/New%20project/native-helper/config.example.json) to:
+Copy [`native-helper/config.example.json`](native-helper/config.example.json) to:
 
 `~/.config/chatgpt-obsidian-sync/config.json`
 
@@ -139,12 +140,14 @@ This creates a host manifest in:
 
 `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.suttikeat.chatgpt_obsidian_sync.json`
 
+Run this command again whenever Chrome gives the unpacked extension a new ID, for example after removing and loading the extension again.
+
 ### 3. Load the extension
 
 1. Open `chrome://extensions`
 2. Enable Developer mode
 3. Click `Load unpacked`
-4. Select the [`extension`](/Users/suttikeat/Documents/New%20project/extension) folder
+4. Select the [`extension`](extension) folder
 5. Pin the extension if you want quick access from the toolbar
 
 ## First sync
@@ -153,7 +156,7 @@ This creates a host manifest in:
 2. Click the extension icon.
 3. Click `Refresh chats`.
 4. Select one or more conversations.
-5. Confirm the target folder is `chatgpt` or change it.
+5. Choose the target folder from the vault folder dropdown.
 6. Click `Sync selected`.
 7. Open Obsidian and check:
 
@@ -161,13 +164,33 @@ This creates a host manifest in:
 
 You should see files named like:
 
-`weekly-planning--<conversation-id>.md`
+`Weekly planning.md`
+
+Conversation titles are preserved in filenames, including Thai titles such as:
+
+`การจัดการข้อมูลโปรไฟล์ AI.md`
 
 ## Notes about ChatGPT extraction
 
 - The extension first tries to fetch ChatGPT conversation JSON from `/backend-api/conversation/<id>`.
 - If that fails for the currently open conversation, it falls back to DOM extraction from the page.
 - Multi-select works from the sidebar links that are currently visible in the ChatGPT UI.
+
+## Target folder picker
+
+The popup loads folder options from the configured Obsidian vault through the macOS native helper. Use `Refresh` next to the target folder dropdown after creating new folders in Obsidian.
+
+The selected folder is stored as a path relative to the vault root, for example:
+
+`200_Areas/202_AI_Automation/ChatGPT_Logs`
+
+If the dropdown only shows `chatgpt`, the native helper probably cannot be reached from the current extension ID. Copy the current ID from `chrome://extensions`, then run:
+
+```bash
+python3 native-helper/install_host.py --extension-id YOUR_EXTENSION_ID
+```
+
+Reload the extension and click `Refresh` next to the dropdown.
 
 ## Limitations in v1
 

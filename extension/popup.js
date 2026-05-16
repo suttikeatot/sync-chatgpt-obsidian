@@ -1,7 +1,8 @@
 const state = {
   conversations: [],
   metadata: {},
-  settings: null
+  settings: null,
+  vaultFolders: []
 };
 
 const elements = {
@@ -12,7 +13,9 @@ const elements = {
   syncButton: document.getElementById("syncButton"),
   chatList: document.getElementById("chatList"),
   statusBanner: document.getElementById("statusBanner"),
-  targetFolderInput: document.getElementById("targetFolderInput"),
+  targetFolderSelect: document.getElementById("targetFolderSelect"),
+  refreshFoldersButton: document.getElementById("refreshFoldersButton"),
+  folderSummary: document.getElementById("folderSummary"),
   hostNameInput: document.getElementById("hostNameInput"),
   resultPanel: document.getElementById("resultPanel")
 };
@@ -24,15 +27,76 @@ bootstrap().catch((error) => {
 elements.refreshButton.addEventListener("click", () => loadConversations());
 elements.selectCurrentButton.addEventListener("click", () => selectConversations((conversation) => conversation.isCurrent));
 elements.selectAllButton.addEventListener("click", () => selectConversations(() => true));
+elements.refreshFoldersButton.addEventListener("click", () => loadVaultFolders());
 elements.saveSettingsButton.addEventListener("click", () => saveSettings());
 elements.syncButton.addEventListener("click", () => syncSelectedConversations());
 
 async function bootstrap() {
   const settingsResponse = await sendRuntimeMessage({ type: "GET_SETTINGS" });
   state.settings = settingsResponse.settings;
-  elements.targetFolderInput.value = state.settings.targetFolder || "chatgpt";
   elements.hostNameInput.value = state.settings.hostName || "com.suttikeat.chatgpt_obsidian_sync";
+  renderFolderOptions([state.settings.targetFolder || "chatgpt"], state.settings.targetFolder || "chatgpt");
+  await loadVaultFolders({ silent: true, preferNativeCurrent: true });
   await loadConversations();
+}
+
+async function loadVaultFolders(options = {}) {
+  const selectedFolder = getSelectedTargetFolder();
+  elements.refreshFoldersButton.disabled = true;
+  elements.folderSummary.textContent = "Loading vault folders...";
+
+  const response = await sendRuntimeMessage({
+    type: "LIST_VAULT_FOLDERS",
+    payload: {
+      hostName: elements.hostNameInput.value.trim() || "com.suttikeat.chatgpt_obsidian_sync",
+      targetFolder: selectedFolder
+    }
+  });
+
+  elements.refreshFoldersButton.disabled = false;
+
+  if (!response?.ok) {
+    renderFolderOptions([selectedFolder], selectedFolder);
+    elements.folderSummary.textContent = response?.error || "Could not load vault folders.";
+    if (!options.silent) {
+      showBanner(elements.folderSummary.textContent, true);
+    }
+    return;
+  }
+
+  state.vaultFolders = response.folders || [];
+  const nextSelectedFolder = options.preferNativeCurrent
+    ? response.current || selectedFolder || state.settings?.targetFolder || "chatgpt"
+    : selectedFolder || response.current || state.settings?.targetFolder || "chatgpt";
+  renderFolderOptions(state.vaultFolders, nextSelectedFolder);
+  elements.folderSummary.textContent = `${state.vaultFolders.length} folder(s) from ${response.vaultPath || "vault"}.`;
+  if (!options.silent) {
+    showBanner("Vault folders refreshed.", false);
+  }
+}
+
+function renderFolderOptions(folders, selectedFolder) {
+  const normalizedSelectedFolder = sanitizeFolderValue(selectedFolder || "chatgpt");
+  const options = Array.from(new Set([normalizedSelectedFolder, ...(folders || []).map(sanitizeFolderValue)]))
+    .filter(Boolean)
+    .sort((first, second) => first.localeCompare(second));
+
+  elements.targetFolderSelect.innerHTML = "";
+  for (const folder of options) {
+    const option = document.createElement("option");
+    option.value = folder;
+    option.textContent = folder;
+    option.selected = folder === normalizedSelectedFolder;
+    elements.targetFolderSelect.appendChild(option);
+  }
+}
+
+function getSelectedTargetFolder() {
+  return sanitizeFolderValue(elements.targetFolderSelect.value || state.settings?.targetFolder || "chatgpt");
+}
+
+function sanitizeFolderValue(value) {
+  return String(value || "chatgpt").replaceAll("\\", "/").trim().replace(/^\/+|\/+$/g, "") || "chatgpt";
 }
 
 async function loadConversations() {
@@ -114,7 +178,7 @@ async function saveSettings() {
   const response = await sendRuntimeMessage({
     type: "SAVE_SETTINGS",
     payload: {
-      targetFolder: elements.targetFolderInput.value.trim() || "chatgpt",
+      targetFolder: getSelectedTargetFolder(),
       hostName: elements.hostNameInput.value.trim() || "com.suttikeat.chatgpt_obsidian_sync"
     }
   });
@@ -143,7 +207,7 @@ async function syncSelectedConversations() {
     return;
   }
 
-  const targetFolder = elements.targetFolderInput.value.trim() || "chatgpt";
+  const targetFolder = getSelectedTargetFolder();
   const syncResponse = await sendRuntimeMessage({
     type: "SYNC_CONVERSATIONS",
     payload: {

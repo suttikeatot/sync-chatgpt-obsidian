@@ -27,7 +27,11 @@
       <section class="panel">
         <label class="field">
           <span>Target folder inside vault</span>
-          <input id="targetFolderInput" type="text" placeholder="chatgpt">
+          <div class="folder-picker">
+            <select id="targetFolderSelect"></select>
+            <button id="refreshFoldersButton" class="button ghost" type="button">Refresh</button>
+          </div>
+          <small id="folderSummary" class="field-note">Vault folders load from the native helper.</small>
         </label>
         <label class="field">
           <span>Native host name</span>
