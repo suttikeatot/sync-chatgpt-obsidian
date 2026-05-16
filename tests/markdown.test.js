@@ -52,10 +52,18 @@ test("renderConversationMarkdown preserves code fences and metadata", () => {
   assert.match(markdown, /content_hash: "deadbeef"/);
 });
 
-test("buildConversationFilename includes a stable conversation id suffix", () => {
+test("buildConversationFilename uses the readable conversation title", () => {
   const filename = context.buildConversationFilename({
     title: "My Weekly Plan",
     conversationId: "conv-999"
   });
-  assert.equal(filename, "my-weekly-plan--conv-999.md");
+  assert.equal(filename, "My Weekly Plan.md");
+});
+
+test("buildConversationFilename preserves Thai titles", () => {
+  const filename = context.buildConversationFilename({
+    title: "การจัดการข้อมูลโปรไฟล์ AI",
+    conversationId: "6a06910f-fa18-83ec-922f-30cd3c04b265"
+  });
+  assert.equal(filename, "การจัดการข้อมูลโปรไฟล์ AI.md");
 });

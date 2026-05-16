@@ -51,7 +51,36 @@ class HelperTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "updated")
             self.assertFalse(old_path.exists())
-            self.assertTrue((output_folder / "new-title--conv-1.md").exists())
+            self.assertTrue((output_folder / "New title.md").exists())
+
+    def test_build_conversation_filename_preserves_thai_title(self):
+        filename = helper.build_conversation_filename(
+            "การจัดการข้อมูลโปรไฟล์ AI",
+            "6a06910f-fa18-83ec-922f-30cd3c04b265",
+        )
+
+        self.assertEqual(filename, "การจัดการข้อมูลโปรไฟล์ AI.md")
+
+    def test_list_vault_folders_returns_relative_paths_and_skips_system_dirs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            vault_path = Path(tmpdir)
+            (vault_path / ".obsidian").mkdir()
+            (vault_path / "200_Areas" / "202_AI_Automation" / "ChatGPT_Logs").mkdir(parents=True)
+            (vault_path / "node_modules" / "ignored").mkdir(parents=True)
+
+            result = helper.list_vault_folders(
+                helper.AppConfig(
+                    vault_path=vault_path,
+                    source_folder="200_Areas/202_AI_Automation/ChatGPT_Logs",
+                )
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertIn("200_Areas", result["folders"])
+            self.assertIn("200_Areas/202_AI_Automation", result["folders"])
+            self.assertIn("200_Areas/202_AI_Automation/ChatGPT_Logs", result["folders"])
+            self.assertNotIn(".obsidian", result["folders"])
+            self.assertNotIn("node_modules", result["folders"])
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import os
 import re
 import struct
 import sys
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from typing import Any
 HOST_NAME = "com.suttikeat.chatgpt_obsidian_sync"
 CONFIG_PATH = Path.home() / ".config" / "chatgpt-obsidian-sync" / "config.json"
 LOG_PATH = Path.home() / ".local" / "state" / "chatgpt-obsidian-sync" / "helper.log"
+SKIPPED_FOLDER_NAMES = {".git", ".obsidian", ".trash", "node_modules"}
 
 
 def ensure_logging() -> None:
@@ -76,8 +78,12 @@ def write_message(message: dict[str, Any]) -> None:
 
 
 def process_request(request: dict[str, Any], config: AppConfig) -> dict[str, Any]:
-    if request.get("type") != "syncConversations":
-        return {"ok": False, "error": f"Unsupported request type: {request.get('type')}"}
+    request_type = request.get("type")
+    if request_type == "listVaultFolders":
+        return list_vault_folders(config, max_depth=int(request.get("maxDepth") or 6))
+
+    if request_type != "syncConversations":
+        return {"ok": False, "error": f"Unsupported request type: {request_type}"}
 
     requested_folder = request.get("settings", {}).get("targetFolder") or config.source_folder
     output_folder = (config.vault_path / sanitize_relative_folder(requested_folder)).resolve()
@@ -103,6 +109,52 @@ def process_request(request: dict[str, Any], config: AppConfig) -> dict[str, Any
         results.append(result)
 
     return {"ok": True, "results": results}
+
+
+def list_vault_folders(config: AppConfig, max_depth: int = 6) -> dict[str, Any]:
+    vault_path = config.vault_path.resolve()
+    if not vault_path.exists():
+        return {"ok": False, "error": f"Vault path does not exist: {vault_path}"}
+    if not vault_path.is_dir():
+        return {"ok": False, "error": f"Vault path is not a directory: {vault_path}"}
+
+    folders: list[str] = []
+    stack = [(vault_path, 0)]
+    while stack:
+        current_path, depth = stack.pop()
+        if depth >= max_depth:
+            continue
+
+        try:
+            children = sorted(
+                (child for child in current_path.iterdir() if child.is_dir() and not child.is_symlink()),
+                key=lambda child: child.name.lower(),
+            )
+        except OSError:
+            continue
+
+        for child in reversed(children):
+            if should_skip_folder(child.name):
+                continue
+            relative = child.relative_to(vault_path).as_posix()
+            folders.append(relative)
+            stack.append((child, depth + 1))
+
+    folders = sorted(set(folders), key=lambda value: value.lower())
+    if config.source_folder and config.source_folder not in folders:
+        folders.append(config.source_folder)
+        folders = sorted(set(folders), key=lambda value: value.lower())
+
+    return {
+        "ok": True,
+        "vaultPath": str(vault_path),
+        "current": config.source_folder,
+        "folders": folders,
+    }
+
+
+def should_skip_folder(name: str) -> bool:
+    return name.startswith(".") or name in SKIPPED_FOLDER_NAMES
 
 
 def sync_conversation(conversation: dict[str, Any], output_folder: Path) -> dict[str, Any]:
@@ -138,14 +190,28 @@ def sync_conversation(conversation: dict[str, Any], output_folder: Path) -> dict
 
 
 def build_conversation_filename(title: str, conversation_id: str) -> str:
-    slug = slugify(title or "conversation")
-    return f"{slug}--{conversation_id}.md"
+    return f"{sanitize_filename(title or f'Conversation {conversation_id[:8]}')}.md"
 
 
 def find_existing_conversation_path(output_folder: Path, conversation_id: str) -> Path | None:
-    pattern = f"*--{conversation_id}.md"
-    matches = list(output_folder.glob(pattern))
-    return matches[0] if matches else None
+    legacy_pattern = f"*--{conversation_id}.md"
+    legacy_matches = list(output_folder.glob(legacy_pattern))
+    if legacy_matches:
+        return legacy_matches[0]
+
+    for path in output_folder.glob("*.md"):
+        try:
+            markdown = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if extract_conversation_id(markdown) == conversation_id:
+            return path
+    return None
+
+
+def extract_conversation_id(markdown: str) -> str | None:
+    match = re.search(r'^conversation_id:\s*"([^"]+)"$', markdown, flags=re.MULTILINE)
+    return match.group(1) if match else None
 
 
 def extract_content_hash(markdown: str) -> str | None:
@@ -153,10 +219,11 @@ def extract_content_hash(markdown: str) -> str | None:
     return match.group(1) if match else None
 
 
-def slugify(value: str) -> str:
-    ascii_only = value.encode("ascii", "ignore").decode("ascii").lower()
-    slug = re.sub(r"[^a-z0-9]+", "-", ascii_only).strip("-")
-    return slug[:80] or "conversation"
+def sanitize_filename(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", str(value or "conversation")).strip()
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1F]+', " ", normalized)
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    return safe[:120] or "conversation"
 
 
 def render_conversation_markdown(conversation: dict[str, Any]) -> str:

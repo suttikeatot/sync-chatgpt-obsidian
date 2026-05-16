@@ -22,6 +22,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "LIST_VAULT_FOLDERS") {
+    handleListVaultFolders(message.payload).then(sendResponse);
+    return true;
+  }
+
   if (message?.type === "GET_SYNC_METADATA") {
     handleGetSyncMetadata(message.conversationIds || []).then(sendResponse);
     return true;
@@ -47,6 +52,31 @@ async function handleSaveSettings(nextSettings) {
   };
   await chrome.storage.local.set({ settings: merged });
   return { ok: true, settings: merged };
+}
+
+async function handleListVaultFolders(payload = {}) {
+  const settings = {
+    ...(await handleGetSettings()).settings,
+    ...(payload || {})
+  };
+
+  try {
+    const response = await sendNativeMessage(settings.hostName, {
+      type: "listVaultFolders",
+      maxDepth: 6
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "Native helper could not list vault folders.");
+    }
+    return response;
+  } catch (error) {
+    return {
+      ok: false,
+      error: error.message,
+      folders: [],
+      current: settings.targetFolder || "chatgpt"
+    };
+  }
 }
 
 async function handleGetSyncMetadata(conversationIds) {
@@ -170,18 +200,17 @@ function computeConversationHash(conversation) {
 }
 
 function buildConversationFilename(conversation) {
-  const slug = slugify(conversation.title || "conversation");
-  return `${slug}--${conversation.conversationId}.md`;
+  return `${sanitizeFilename(conversation.title || "conversation")}.md`;
 }
 
-function slugify(input) {
+function sanitizeFilename(input) {
   return String(input || "")
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "conversation";
+    .normalize("NFC")
+    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[. ]+|[. ]+$/g, "")
+    .slice(0, 120) || "conversation";
 }
 
 function renderConversationMarkdown(conversation) {
